@@ -13,6 +13,9 @@ jobs:
           submodules: recursive 
       - run: git fetch --prune --unshallow --no-recurse-submodules
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Authenticated API requests avoid the shared-runner rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       # LiteX 2023.12 doesn't work on Python 3.13+, so pin 3.11 (after oss-cad-suite, which ships its own python).
       - uses: actions/setup-python@v5
         id: python
@@ -41,6 +44,9 @@ jobs:
           submodules: recursive 
       - run: git fetch --prune --unshallow --no-recurse-submodules
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Authenticated API requests avoid the shared-runner rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       # LiteX 2023.12 doesn't work on Python 3.13+, so pin 3.11 (after oss-cad-suite, which ships its own python).
       - uses: actions/setup-python@v5
         id: python
@@ -69,6 +75,9 @@ jobs:
           submodules: recursive 
       - run: git fetch --prune --unshallow --no-recurse-submodules
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Authenticated API requests avoid the shared-runner rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       # LiteX 2023.12 doesn't work on Python 3.13+, so pin 3.11 (after oss-cad-suite, which ships its own python).
       - uses: actions/setup-python@v5
         id: python
@@ -103,6 +112,9 @@ jobs:
       # Release tags give the USB device version; forks may not have them.
       - run: git fetch --tags https://github.com/orbcode/orbtrace || true
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Authenticated API requests avoid the shared-runner rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       # LiteX 2023.12 doesn't work on Python 3.13+, so pin 3.11 (after oss-cad-suite, which ships its own python).
       - uses: actions/setup-python@v5
         id: python
@@ -145,6 +157,9 @@ jobs:
           submodules: recursive
       - run: git fetch --prune --unshallow --no-recurse-submodules
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Authenticated API requests avoid the shared-runner rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       # LiteX 2023.12 doesn't work on Python 3.13+, so pin 3.11 (after oss-cad-suite, which ships its own python).
       - uses: actions/setup-python@v5
         id: python
