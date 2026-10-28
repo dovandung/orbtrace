@@ -77,16 +77,17 @@ jobs:
       - name: Build Orbuculum
         working-directory: ./orbuculum
         run: |
+          # Newer GCC warns about code in the bundled libdwarf, which is built with -Werror.
           export PKG_CONFIG_PATH=`realpath ../libusb/install/lib/pkgconfig`
           report() {
             # Put the interesting lines in an annotation, so the failure is visible on the run page.
-            msg=$(grep -iE "error|undefined|not found|fatal|ERROR:" build.log | grep -v -- "-Werror" | head -40)
+            msg=$(grep -iE "error|warning:|undefined|not found|fatal" build.log | head -40)
             [ -n "$msg" ] || msg=$(tail -40 build.log)
             msg=${msg//'%'/'%25'}; msg=${msg//$'\r'/}; msg=${msg//$'\n'/'%0A'}
             echo "::error title=Orbuculum build::$msg"
             exit 1
           }
-          meson setup ./build --prefix A:/ > build.log 2>&1 || { cat build.log; cat build/meson-logs/meson-log.txt | tail -60 >> build.log; report; }
+          meson setup ./build --prefix A:/ -Dwerror=false -Dlibdwarf:werror=false > build.log 2>&1 || { cat build.log; cat build/meson-logs/meson-log.txt | tail -60 >> build.log; report; }
           cat build.log
           ninja -C ./build > build.log 2>&1 || { cat build.log; report; }
           cat build.log
