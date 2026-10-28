@@ -142,7 +142,7 @@ ACK_ERROR                = 4
 # DAP_JTAG_Configure     : Done
 # DAP_JTAG_IDCODE        : Done
 # DAP_Transfer_Configure : Done
-# DAP_Transfer           : Done (Masking & Match done, not tested)
+# DAP_Transfer           : Done (value match / match mask tested in simulation)
 # DAP_TransferBlock      : Done
 # DAP_TransferAbort      : Done
 # DAP_ExecuteCommands    : Not Implemented (indicated in config bits)
@@ -762,10 +762,12 @@ class CMSIS_DAP(Elaboratable):
                         self.tfr_txb.eq(self.tfr_txb+1)
                     ]
 
-                    with m.If(self.tfrReq.bit_select(5,1) & (self.tfr_txb==6)):
-                        # This is a match register write
+                    with m.If(self.tfrReq.bit_select(5,1) & (self.tfr_txb==5)):
+                        # This is a match mask write (on the last data byte): store the mask, don't
+                        # send anything to the target, and report it as completed OK.
                         m.d.sync += [
-                            self.mask.eq(Cat(self.streamOut.payload,self.tfrData.bit_select(0,24))),
+                            self.mask.eq(Cat(self.tfrData.bit_select(0,24),self.streamOut.payload)),
+                            self.txBlock.word_select(2,8).eq(C(ACK_OK,8)),
                             self.tfr_txb.eq(0)
                         ]
                 with m.Else():
@@ -819,14 +821,33 @@ class CMSIS_DAP(Elaboratable):
             # Good data reception, decide how to handle it -----------------------------------------------
             with m.Case(9):
                 with m.If(self.tfrReq.bit_select(4,1)):
-                    # This is a transfer match request
-                    m.d.sync += self.matchretries.eq(self.matchretries-1)
-                    with m.If(((self.dbgif.dread & self.mask) !=self.tfrData) & (self.matchretries==0)):
-                        # Not a match and we've run out of attempts, so set bit 4
-                        m.d.sync += self.txBlock.bit_select(21,1).eq(1)
-                        m.d.sync += self.tfr_txb.eq(10)
+                    # This is a read with value match: keep reading until (value & mask) == data or
+                    # the match retries run out. No data is returned for it.
+                    with m.If(self.readIgnore):
+                        # First SWD AP read only posts the read, its data is stale: read again
+                        m.d.sync += [
+                            self.readIgnore.eq(0),
+                            self.tfr_txb.eq(6)
+                        ]
+                    with m.Elif((self.dbgif.dread & self.mask) == self.tfrData):
+                        # Matched. Drop the AP read the last access posted, it isn't wanted.
+                        m.d.sync += [
+                            self.readDelay.eq(0),
+                            self.tfr_txb.eq(0)
+                        ]
+                    with m.Elif(self.matchretries==0):
+                        # Not a match and we've run out of attempts: flag Value Mismatch (bit 4)
+                        m.d.sync += [
+                            self.txBlock.bit_select(16+4,1).eq(1),
+                            self.readDelay.eq(0),
+                            self.tfr_txb.eq(10)
+                        ]
                     with m.Else():
-                        m.d.sync += self.tfr_txb.eq(6)
+                        m.d.sync += [
+                            self.matchretries.eq(self.matchretries-1),
+                            self.retries.eq(self.waitRetry),
+                            self.tfr_txb.eq(6)
+                        ]
 
                 with m.Else():
                     m.d.sync += self.readIgnore.eq(0)
