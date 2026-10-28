@@ -297,7 +297,8 @@ class CMSIS_DAP(Elaboratable):
         self.swoTransport   = Signal(2)
         self.swoMode        = Signal(2)
         self.swoCapture     = Signal()       # Capture active
-        self.swoOverrun     = Signal()       # Buffer overrun since capture started
+        self.swoOverrun     = Signal()       # Buffer overrun since the status was last reported
+        self.swoClearErr    = Signal()       # Status was reported this cycle: clear the error flags
         self.swoIndex       = Signal(32)     # Bytes captured since capture started
         self.swoClear       = Signal()       # Pulse to empty the buffer
         self.swoLevel       = Signal(range(DAP_SWO_BUFFER_SIZE+1))
@@ -1153,6 +1154,7 @@ class CMSIS_DAP(Elaboratable):
     def RESP_SWO_Status(self, m):
         # <0x1B> -> <0x1B> <TraceStatus> <TraceCount:32>
         m.next = 'RESPOND'
+        m.d.comb += self.swoClearErr.eq(1)
         m.d.sync += [
             self.txLen.eq(6),
             self.txBlock[8:48].eq(Cat(self.swoStatus, self.swoLevel, C(0, 32-len(self.swoLevel)))),
@@ -1168,6 +1170,7 @@ class CMSIS_DAP(Elaboratable):
                     parts = []
                     if ctl & 1:
                         parts.append(self.swoStatus)
+                        m.d.comb += self.swoClearErr.eq(1)
                     if ctl & 2:
                         parts.append(count)
                     if ctl & 4:
@@ -1179,6 +1182,7 @@ class CMSIS_DAP(Elaboratable):
     # ----------------------------------------------------------------------------------
     def RESP_SWO_Data_Setup(self, m):
         # <0x1C> <TraceCount:16> -> <0x1C> <TraceStatus> <Count:16> <Data...>
+        m.d.comb += self.swoClearErr.eq(1)
         m.d.sync += [
             self.txBlock[8:16].eq(self.swoStatus),
             self.txBlock[16:32].eq(self.swoDataN),
@@ -1445,6 +1449,9 @@ class CMSIS_DAP(Elaboratable):
                 self.swoLevel.eq(swobuf.level),
                 self.swoBufData.eq(swobuf.r_data),
             ]
+            # Like the reference firmware, an error is reported once and then cleared.
+            with m.If(self.swoClearErr):
+                m.d.sync += self.swoOverrun.eq(0)
             with m.If(self.swo_in_valid & self.swoCapture):
                 with m.If(swobuf.w_rdy):
                     m.d.sync += self.swoIndex.eq(self.swoIndex + 1)

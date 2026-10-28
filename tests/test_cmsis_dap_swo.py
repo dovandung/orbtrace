@@ -312,6 +312,17 @@ def test_overrun_and_clear_on_start():
         assert r[1] == 0x81   # active + overrun
         assert struct.unpack('<I', bytes(r[2:6]))[0] == DAP_SWO_BUFFER_SIZE
 
+        # Reported once, then cleared (like the reference CMSIS-DAP firmware)
+        r = await command(ctx, top, [0x1B])
+        assert r[1] == 0x01
+
+        # A new overrun is reported again
+        await feed_swo(ctx, top, [0x55] * 4)
+        r = await command(ctx, top, [0x1C] + list(struct.pack('<H', 0)))
+        assert r[1] == 0x81
+        r = await command(ctx, top, [0x1E, 0x01])
+        assert r == [0x1E, 0x01]
+
         # Restart: buffer and flags cleared
         await command(ctx, top, [0x1A, 0x00])
         await command(ctx, top, [0x1A, 0x01])
