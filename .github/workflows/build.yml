@@ -62,6 +62,45 @@ jobs:
             build/orbtrace_mini_test/gateware/orbtrace_mini.bit
             build/orbtrace_mini_test/gateware/csr.csv
 
+  cynthion:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ['25F', '12F']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: git fetch --prune --unshallow --no-recurse-submodules
+      # Release tags give the USB device version; forks may not have them.
+      - run: git fetch --tags https://github.com/orbcode/orbtrace || true
+      - uses: YosysHQ/setup-oss-cad-suite@v3
+      - uses: gregdavill/setup-riscv-gnu-toolchain@v2.0
+      - run: python3 -m pip install pdm meson ninja
+      - run: pdm install
+      - run: |
+          pdm run orbtrace_builder --platform cynthion --device ${{ matrix.device }} \
+            --output-dir build/cynthion_${{ matrix.device }} --build 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+      - name: Timing summary
+        if: always()
+        run: |
+          {
+            echo "### Cynthion ${{ matrix.device }}"
+            echo '```'
+            grep -E "Max frequency for clock|Info: Device utilisation|TRELLIS_SLICE|TRELLIS_IO|DP16KD|EHXPLLL" build.log || echo "no nextpnr report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orbtrace_cynthion_${{ matrix.device }}
+          path: |
+            build/cynthion_${{ matrix.device }}/gateware/cynthion.bit
+            build/cynthion_${{ matrix.device }}/gateware/csr.csv
+            build.log
+
   test:
     runs-on: ubuntu-latest
     steps:
