@@ -78,9 +78,20 @@ jobs:
         working-directory: ./orbuculum
         run: |
           export PKG_CONFIG_PATH=`realpath ../libusb/install/lib/pkgconfig`
-          meson setup ./build --prefix A:/
-          ninja -C ./build
-          meson install -C ./build --destdir ./install --strip
+          report() {
+            # Put the interesting lines in an annotation, so the failure is visible on the run page.
+            msg=$(grep -iE "error|undefined|not found|fatal|ERROR:" build.log | grep -v -- "-Werror" | head -40)
+            [ -n "$msg" ] || msg=$(tail -40 build.log)
+            msg=${msg//'%'/'%25'}; msg=${msg//$'\r'/}; msg=${msg//$'\n'/'%0A'}
+            echo "::error title=Orbuculum build::$msg"
+            exit 1
+          }
+          meson setup ./build --prefix A:/ > build.log 2>&1 || { cat build.log; cat build/meson-logs/meson-log.txt | tail -60 >> build.log; report; }
+          cat build.log
+          ninja -C ./build > build.log 2>&1 || { cat build.log; report; }
+          cat build.log
+          meson install -C ./build --destdir ./install --strip > build.log 2>&1 || { cat build.log; report; }
+          cat build.log
 
       - name: Bundle DLLs
         working-directory: ./orbuculum/build/install/bin
