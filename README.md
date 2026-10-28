@@ -56,7 +56,7 @@ The gateware can also run on a Cynthion, with the probe signals on the two Pmod 
 
 `pdm run orbtrace_builder --platform cynthion --build`
 
-Options: `--device 25F` (default) or `--device 12F` to match the ECP5 on your board (read the chip marking), and `--speed 6|7|8` (default 8).
+Options: `--device 25F` (default) or `--device 12F` to match the ECP5 on your board (read the chip marking), and `--speed 6|7|8` (default 8). The system clock defaults to 72 MHz on Cynthion (instead of 75 MHz) for timing margin; override with `--sys-clk-freq`.
 
 Load it into the FPGA with Apollo (temporary), or write it to flash (permanent):
 
