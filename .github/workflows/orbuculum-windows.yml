@@ -1,0 +1,104 @@
+name: Orbuculum Windows (patched)
+
+# Builds Orbuculum host tools for Windows with the patches in orbuculum-patches/ applied
+# (e.g. the orbprofile "Could not connect: No error" fix). Download the
+# "orbuculum-win64-patched" artifact from the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      orbuculum_ref:
+        description: 'Orbuculum commit, branch or tag'
+        default: '3de6b9b8afcedfe6d90604a7990fbd2c13879f5e'
+  push:
+    paths:
+      - 'orbuculum-patches/**'
+      - '.github/workflows/orbuculum-windows.yml'
+
+jobs:
+  win64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      ORBUCULUM_REF: ${{ github.event.inputs.orbuculum_ref || '3de6b9b8afcedfe6d90604a7990fbd2c13879f5e' }}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          msystem: MINGW64
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-zeromq
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-libelf
+            git
+            zip
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-autotools
+            mingw-w64-x86_64-ca-certificates
+
+      - uses: actions/checkout@v4
+        with:
+          path: ./orbtrace
+
+      - uses: actions/checkout@v4
+        with:
+          repository: orbcode/orbuculum
+          ref: ${{ env.ORBUCULUM_REF }}
+          path: ./orbuculum
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          path: ./libusb/src
+          repository: Novakov/libusb
+          ref: d67cf6868b91c5972aa4225caf9b924f25a9bda6
+
+      - name: Apply patches
+        working-directory: ./orbuculum
+        run: |
+          for p in ../orbtrace/orbuculum-patches/*.patch; do
+            echo "Applying $p"
+            git apply --verbose "$p"
+          done
+          git diff --stat
+
+      - name: Build libusb
+        run: |
+          (cd ./libusb/src && ./bootstrap.sh)
+          mkdir -p ./libusb/build
+          cd ./libusb/build
+          ../src/configure --prefix=`realpath ../install`
+          make -j4 install
+
+      - name: Build Orbuculum
+        working-directory: ./orbuculum
+        run: |
+          export PKG_CONFIG_PATH=`realpath ../libusb/install/lib/pkgconfig`
+          meson setup ./build --prefix A:/
+          ninja -C ./build
+          meson install -C ./build --destdir ./install --strip
+
+      - name: Bundle DLLs
+        working-directory: ./orbuculum/build/install/bin
+        run: |
+          cp ../../../../libusb/install/bin/libusb-1.0.dll .
+          # Copy every MinGW runtime DLL the tools need, so they run without MSYS2 installed.
+          for i in 1 2 3; do
+            for f in *.exe *.dll; do
+              ldd "$f" | awk '/\/mingw64\// {print $3}' | while read d; do
+                [ -f "$(basename "$d")" ] || cp -v "$d" .
+              done
+            done
+          done
+          ls -la
+          ./orbprofile.exe --version || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbuculum-win64-patched
+          path: ./orbuculum/build/install/**/*.*
+          if-no-files-found: error

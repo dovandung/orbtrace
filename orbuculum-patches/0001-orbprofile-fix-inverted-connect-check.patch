@@ -1,0 +1,13 @@
+diff --git a/Src/orbprofile.c b/Src/orbprofile.c
+index 2841c17..a7cf7cc 100644
+--- a/Src/orbprofile.c
++++ b/Src/orbprofile.c
+@@ -900,7 +900,7 @@ int main( int argc, char *argv[] )
+             {
+                 stream = streamCreateSocket( _r.options->server, _r.options->port );
+ 
+-                if ( !stream )
++                if ( stream )
+                 {
+                     break;
+                 }
