@@ -1,4 +1,6 @@
 from amaranth                import *
+from amaranth.lib.fifo       import SyncFIFOBuffered
+from luna.gateware.stream    import StreamInterface
 from .dbgIF                  import DBGIF
 from ..git_version           import get_version
 
@@ -28,6 +30,32 @@ DAP_MAX_PACKET_COUNT     = 1                # 1 max packet count
 DAP_V1_MAX_PACKET_SIZE   = 64
 DAP_V2_MAX_PACKET_SIZE   = 508
 MAX_MSG_LEN              = DAP_V2_MAX_PACKET_SIZE
+
+# SWO support (only when the trace core is present)
+# ==================================================
+
+DAP_CAP_SWO_UART         = 0x04             # SWO UART (NRZ) supported
+DAP_CAP_SWO_MANCHESTER   = 0x08             # SWO Manchester supported
+DAP_CAP_SWO_STREAM       = 0x40             # SWO streaming via separate endpoint (v2 only)
+DAP_SWO_BUFFER_SIZE      = 4096             # Bytes of SWO buffering in the probe
+
+SWO_TRANSPORT_NONE       = 0
+SWO_TRANSPORT_DATA       = 1                # Read with DAP_SWO_Data
+SWO_TRANSPORT_STREAM     = 2                # Streamed on the third v2 bulk endpoint
+
+SWO_MODE_OFF             = 0
+SWO_MODE_UART            = 1
+SWO_MODE_MANCHESTER      = 2
+
+SWO_UART_BAUD_MIN        = 125_000          # Limits of the SWO receiver in the trace core
+SWO_UART_BAUD_MAX        = 62_000_000
+SWO_MANCHESTER_BAUD_MAX  = 48_000_000
+
+TRACE_FORMAT_MANCHESTER  = 0x10             # Raw (no TPIU) input formats of the trace core
+TRACE_FORMAT_UART        = 0x12
+
+DAP_OK                   = 0x00
+DAP_ERROR                = 0xff
 
 # CMSIS-DAP Protocol Messages
 # ===========================
@@ -103,13 +131,13 @@ ACK_ERROR                = 4
 # DAP_SWJ_Sequence       : Done
 # DAP_SWD_Configure      : Done
 # DAP_SWD_Sequence       : Done
-# DAP_SWO_Transport      : Not implemented (indicated in config bits)
-# DAP_SWO_Mode           : Not implemented (indicated in config bits)
-# DAP_SWO_Baudrate       : Not implemented (indicated in config bits)
-# DAP_SWO_Control        : Not implemented (indicated in config bits)
-# DAP_SWO_Status         : Not implemented (indicated in config bits)
-# DAP_SWO_ExtendedStatus : Not implemented (indicated in config bits)
-# DAP_SWO_Data           : Not implemented (indicated in config bits)
+# DAP_SWO_Transport      : Done (needs the trace core)
+# DAP_SWO_Mode           : Done (needs the trace core)
+# DAP_SWO_Baudrate       : Done (needs the trace core)
+# DAP_SWO_Control        : Done (needs the trace core)
+# DAP_SWO_Status         : Done (needs the trace core)
+# DAP_SWO_ExtendedStatus : Done (needs the trace core)
+# DAP_SWO_Data           : Done (needs the trace core)
 # DAP_JTAG_Sequence      : Done
 # DAP_JTAG_Configure     : Done
 # DAP_JTAG_IDCODE        : Done
@@ -144,11 +172,43 @@ class WideRam(Elaboratable):
         ]
         return m
 
+# Buffer for SWO data on its way to the host
+# ==========================================
+
+class SWOBuffer(Elaboratable):
+    def __init__(self, depth):
+        self.depth   = depth
+
+        self.w_data  = Signal(8)
+        self.w_en    = Signal()
+        self.w_rdy   = Signal()
+
+        self.r_data  = Signal(8)             # First-word-fall-through
+        self.r_rdy   = Signal()
+        self.r_en    = Signal()
+
+        self.level   = Signal(range(depth+1))
+        self.clear   = Signal()              # Empties the buffer
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.fifo = fifo = ResetInserter(self.clear)(SyncFIFOBuffered(width=8, depth=self.depth))
+        m.d.comb += [
+            fifo.w_data.eq(self.w_data),
+            fifo.w_en.eq(self.w_en),
+            self.w_rdy.eq(fifo.w_rdy),
+            self.r_data.eq(fifo.r_data),
+            self.r_rdy.eq(fifo.r_rdy),
+            fifo.r_en.eq(self.r_en),
+            self.level.eq(fifo.level),
+        ]
+        return m
+
 # This is the CMSIS-DAP handler itself
 # ====================================
 
 class CMSIS_DAP(Elaboratable):
-    def __init__(self, streamIn, streamOut, dbgif, v2Indication):
+    def __init__(self, streamIn, streamOut, dbgif, v2Indication, has_swo=False):
         # External interface (generally LEDs)
         self.running        = Signal()       # Flag for if target is running
         self.connected      = Signal()       # Flag for if target is connected
@@ -221,6 +281,34 @@ class CMSIS_DAP(Elaboratable):
 
         self.dbgif      = dbgif
 
+        # SWO support
+        # Connection to the trace core: raw SWO bytes in, format and baud rate out
+        self.has_swo        = has_swo
+        self.swo_in_data    = Signal(8)      # Raw SWO byte from the trace core
+        self.swo_in_valid   = Signal()       # (always accepted, dropped if not capturing)
+        self.swo_format     = Signal(8)      # Trace core input format, 0 = not owned by CMSIS-DAP
+        self.swo_baudrate   = Signal(32)     # Requested UART baud rate
+        self.swo_baudrate_strobe = Signal()  # Pulse to apply swo_baudrate
+
+        # SWO streaming output (transport 2, third v2 bulk IN endpoint)
+        self.swoStream      = StreamInterface()
+
+        # SWO state
+        self.swoTransport   = Signal(2)
+        self.swoMode        = Signal(2)
+        self.swoCapture     = Signal()       # Capture active
+        self.swoOverrun     = Signal()       # Buffer overrun since capture started
+        self.swoIndex       = Signal(32)     # Bytes captured since capture started
+        self.swoClear       = Signal()       # Pulse to empty the buffer
+        self.swoLevel       = Signal(range(DAP_SWO_BUFFER_SIZE+1))
+        self.swoStatus      = Signal(8)      # TraceStatus byte
+        self.swoDataCount   = Signal(16)     # Bytes left to send in a DAP_SWO_Data response
+        self.swoDataN       = Signal(16)     # Bytes a DAP_SWO_Data request will return
+        self.swoHdr         = Signal(3)      # Header bytes sent in a DAP_SWO_Data response
+        self.swoPopData     = Signal()       # DAP_SWO_Data is taking a byte from the buffer
+        self.swoBufData     = Signal(8)      # Byte at the head of the SWO buffer
+        self.caps           = Signal(8)      # Capabilities byte
+
     # ----------------------------------------------------------------------------------
     def RESP_Invalid(self, m):
         # Simply transmit an 'invalid' packet back
@@ -248,9 +336,14 @@ class CMSIS_DAP(Elaboratable):
                 m.d.sync += [ self.txLen.eq(3+DAP_VERSION_STRING_LEN),
                               self.txBlock.bit_select(8,8+(2+DAP_VERSION_STRING_LEN)*8).eq(DAP_VERSION_STRING)  ]
             with m.Case(0xF0): # Get information about the Capabilities (BYTE) of the Debug Unit
-                m.d.sync+=[self.txLen.eq(3), self.txBlock[8:24].eq(Cat(C(1,8),C(DAP_CAPABILITIES,8)))]
+                m.d.sync+=[self.txLen.eq(3), self.txBlock[8:24].eq(Cat(C(1,8),self.caps))]
             with m.Case(0xF1): # Get the Test Domain Timer parameter information
                 m.d.sync+=[self.txLen.eq(6), self.txBlock[8:56].eq(Cat(C(8,8),C(DAP_TD_TIMER_FREQ,32)))]
+            with m.Case(0xFD): # Get the SWO Trace Buffer Size (WORD)
+                if self.has_swo:
+                    m.d.sync+=[self.txLen.eq(6), self.txBlock[8:48].eq(Cat(C(4,8),C(DAP_SWO_BUFFER_SIZE,32)))]
+                else:
+                    m.d.sync+=[self.txLen.eq(2), self.txBlock[8:16].eq(C(0,8))]
             with m.Case(0xFE): # Get the maximum Packet Count (BYTE)
                 m.d.sync+=[self.txLen.eq(6), self.txBlock[8:24].eq(Cat(C(1,8),C(DAP_MAX_PACKET_COUNT,8)))]
             with m.Case(0xFF): # Get the maximum Packet Size (SHORT).
@@ -964,6 +1057,149 @@ class CMSIS_DAP(Elaboratable):
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
 
+    def RESP_SWO_Error(self, m):
+        m.d.sync += self.txBlock[8:16].eq(C(DAP_ERROR,8))
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Transport(self, m):
+        # <0x17> <Transport> -> <0x17> <Status>
+        m.next = 'RESPOND'
+        transport = self.rxBlock.word_select(1,8)
+        if not self.has_swo:
+            self.RESP_SWO_Error(m)
+            return
+        with m.If((transport > SWO_TRANSPORT_STREAM) | ((transport == SWO_TRANSPORT_STREAM) & ~self.isV2) |
+                  self.swoCapture):
+            self.RESP_SWO_Error(m)
+        with m.Else():
+            m.d.sync += self.swoTransport.eq(transport)
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Mode(self, m):
+        # <0x18> <Mode> -> <0x18> <Status>
+        # Changing the mode stops capture, like the reference implementation.
+        m.next = 'RESPOND'
+        mode = self.rxBlock.word_select(1,8)
+        if not self.has_swo:
+            self.RESP_SWO_Error(m)
+            return
+        m.d.sync += [ self.swoCapture.eq(0), self.swoOverrun.eq(0) ]
+        with m.If(mode > SWO_MODE_MANCHESTER):
+            m.d.sync += self.swoMode.eq(SWO_MODE_OFF)
+            self.RESP_SWO_Error(m)
+        with m.Else():
+            m.d.sync += self.swoMode.eq(mode)
+            # (Re)apply the baud rate now the trace core is listening to us
+            with m.If(self.swo_baudrate != 0):
+                m.d.sync += self.swo_baudrate_strobe.eq(1)
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Baudrate(self, m):
+        # <0x19> <Baudrate:32> -> <0x19> <Baudrate:32>, 0 = not supported
+        m.next = 'RESPOND'
+        req = self.rxBlock[8:40]
+        m.d.sync += self.txLen.eq(5)
+        if not self.has_swo:
+            m.d.sync += self.txBlock[8:40].eq(0)
+            return
+        maxbaud = Mux(self.swoMode == SWO_MODE_MANCHESTER, SWO_MANCHESTER_BAUD_MAX, SWO_UART_BAUD_MAX)
+        with m.If((req >= SWO_UART_BAUD_MIN) & (req <= maxbaud)):
+            m.d.sync += [
+                self.swo_baudrate.eq(req),
+                self.swo_baudrate_strobe.eq(1),
+                self.txBlock[8:40].eq(req),
+            ]
+        with m.Else():
+            m.d.sync += self.txBlock[8:40].eq(0)
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Control(self, m):
+        # <0x1A> <Control> -> <0x1A> <Status>, Control bit 0: 1 = start, 0 = stop
+        m.next = 'RESPOND'
+        if not self.has_swo:
+            self.RESP_SWO_Error(m)
+            return
+        with m.If(self.rxBlock[8]):
+            with m.If((self.swoMode == SWO_MODE_OFF) |
+                      ((self.swoMode == SWO_MODE_UART) & (self.swo_baudrate == 0))):
+                self.RESP_SWO_Error(m)
+            with m.Elif(~self.swoCapture):
+                m.d.sync += [
+                    self.swoCapture.eq(1),
+                    self.swoOverrun.eq(0),
+                    self.swoIndex.eq(0),
+                    self.swoClear.eq(1),
+                ]
+        with m.Else():
+            m.d.sync += self.swoCapture.eq(0)
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Status(self, m):
+        # <0x1B> -> <0x1B> <TraceStatus> <TraceCount:32>
+        m.next = 'RESPOND'
+        m.d.sync += [
+            self.txLen.eq(6),
+            self.txBlock[8:48].eq(Cat(self.swoStatus, self.swoLevel, C(0, 32-len(self.swoLevel)))),
+        ]
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_ExtendedStatus(self, m):
+        # <0x1E> <Control> -> <0x1E> [<TraceStatus>] [<TraceCount:32>] [<Index:32> <TD_TimeStamp:32>]
+        m.next = 'RESPOND'
+        count = Cat(self.swoLevel, C(0, 32-len(self.swoLevel)))
+        with m.Switch(self.rxBlock.word_select(1,8)[0:3]):
+            for ctl in range(8):
+                with m.Case(ctl):
+                    parts = []
+                    if ctl & 1:
+                        parts.append(self.swoStatus)
+                    if ctl & 2:
+                        parts.append(count)
+                    if ctl & 4:
+                        parts += [ self.swoIndex, C(0,32) ]  # No timestamps
+                    if parts:
+                        payload = Cat(*parts)
+                        m.d.sync += self.txBlock[8:8+len(payload)].eq(payload)
+                    m.d.sync += self.txLen.eq(1 + sum(len(p) for p in parts)//8)
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Data_Setup(self, m):
+        # <0x1C> <TraceCount:16> -> <0x1C> <TraceStatus> <Count:16> <Data...>
+        m.d.sync += [
+            self.txBlock[8:16].eq(self.swoStatus),
+            self.txBlock[16:32].eq(self.swoDataN),
+            self.swoDataCount.eq(self.swoDataN),
+            self.swoHdr.eq(0),
+            self.txedLen.eq(0),
+        ]
+        m.next = 'DAP_SWO_Data_PROCESS'
+    # ----------------------------------------------------------------------------------
+    def RESP_SWO_Data_Process(self, m):
+        # Send the 4 byte header from txBlock, then the data straight from the SWO buffer
+        with m.If(self.streamIn.valid & ~self.streamIn.ready):
+            # Hold the byte until the endpoint takes it
+            m.d.sync += self.streamIn.valid.eq(1)
+
+        with m.Elif(~self.streamIn.valid):
+            with m.If(self.swoHdr < 4):
+                m.d.sync += [
+                    self.streamIn.payload.eq(self.txBlock.word_select(self.swoHdr,8)),
+                    self.streamIn.valid.eq(1),
+                    self.streamIn.last.eq(self.isV2 & (self.swoHdr == 3) & (self.swoDataCount == 0)),
+                    self.swoHdr.eq(self.swoHdr+1),
+                    self.txedLen.eq(self.txedLen+1),
+                ]
+            with m.Elif(self.swoDataCount != 0):
+                m.d.comb += self.swoPopData.eq(1)
+                m.d.sync += [
+                    self.streamIn.payload.eq(self.swoBufData),
+                    self.streamIn.valid.eq(1),
+                    self.streamIn.last.eq(self.isV2 & (self.swoDataCount == 1)),
+                    self.swoDataCount.eq(self.swoDataCount-1),
+                    self.txedLen.eq(self.txedLen+1),
+                ]
+            with m.Else():
+                with m.If(self.isV2):
+                    m.next = 'IDLE'
+                with m.Else():
+                    m.next = 'V1PACKETFILL'
+
+    # ----------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------
+
     def RESP_Sequence_Setup(self, m):
         # <0x1D or 0x14> <SequenceCount> <SequenceInfo> ...
         # Generate SWD sequence and output on SWDIO or capture from SWDIO
@@ -1157,6 +1393,62 @@ class CMSIS_DAP(Elaboratable):
         # By default we are busy unless overridden
         m.d.sync += self.busy.eq(1)
 
+        # SWO datapath
+        # ------------
+        caps = DAP_CAPABILITIES
+        if self.has_swo:
+            caps |= DAP_CAP_SWO_UART | DAP_CAP_SWO_MANCHESTER
+            m.d.comb += self.caps.eq(caps | Mux(self.isV2, DAP_CAP_SWO_STREAM, 0))
+        else:
+            m.d.comb += self.caps.eq(caps)
+
+        # Pulses, cleared unless set by a command this cycle
+        m.d.sync += [ self.swo_baudrate_strobe.eq(0), self.swoClear.eq(0) ]
+
+        # TraceStatus: bit 0 capture active, bit 6 stream error, bit 7 buffer overrun
+        m.d.comb += self.swoStatus.eq(Cat(self.swoCapture, C(0,6), self.swoOverrun))
+
+        if self.has_swo:
+            m.submodules.swobuf = self.swoBuf = swobuf = SWOBuffer(DAP_SWO_BUFFER_SIZE)
+
+            # Hand the trace core the format for the selected mode
+            m.d.comb += self.swo_format.eq(
+                Mux(self.swoMode == SWO_MODE_UART, TRACE_FORMAT_UART,
+                Mux(self.swoMode == SWO_MODE_MANCHESTER, TRACE_FORMAT_MANCHESTER, 0)))
+
+            # Capture into the buffer, flag an overrun if it is full
+            m.d.comb += [
+                swobuf.clear.eq(self.swoClear),
+                swobuf.w_data.eq(self.swo_in_data),
+                swobuf.w_en.eq(self.swo_in_valid & self.swoCapture),
+                self.swoLevel.eq(swobuf.level),
+                self.swoBufData.eq(swobuf.r_data),
+            ]
+            with m.If(self.swo_in_valid & self.swoCapture):
+                with m.If(swobuf.w_rdy):
+                    m.d.sync += self.swoIndex.eq(self.swoIndex + 1)
+                with m.Else():
+                    m.d.sync += self.swoOverrun.eq(1)
+
+            # Transport 2: stream the buffer out on the SWO endpoint. End a packet whenever the
+            # buffer runs empty, so data doesn't wait for a full 512 byte packet.
+            stream_en = (self.swoTransport == SWO_TRANSPORT_STREAM)
+            m.d.comb += [
+                self.swoStream.valid.eq(stream_en & swobuf.r_rdy),
+                self.swoStream.payload.eq(swobuf.r_data),
+                self.swoStream.last.eq(swobuf.level == 1),
+                swobuf.r_en.eq(Mux(stream_en, self.swoStream.ready & swobuf.r_rdy, self.swoPopData)),
+            ]
+
+            # Transport 1: bytes a DAP_SWO_Data request can return now
+            maxlen = Mux(self.isV2, DAP_V2_MAX_PACKET_SIZE-4, DAP_V1_MAX_PACKET_SIZE-4)
+            req    = self.rxBlock[8:24]
+            avail  = Mux(self.swoTransport == SWO_TRANSPORT_DATA, swobuf.level, 0)
+            n1     = Mux(req < avail, req, avail)
+            m.d.comb += self.swoDataN.eq(Mux(n1 < maxlen, n1, maxlen))
+        else:
+            m.d.comb += self.swoDataN.eq(0)
+
         with m.FSM(domain="sync") as decoder:
 
     #########################################################################################
@@ -1296,7 +1588,26 @@ class CMSIS_DAP(Elaboratable):
 
                     # SWO Commands
                     # ============
-                    # All SWO commands are ignored to create an INVALID response
+                    with m.Case(DAP_SWO_Transport):
+                        self.RESP_SWO_Transport(m)
+
+                    with m.Case(DAP_SWO_Mode):
+                        self.RESP_SWO_Mode(m)
+
+                    with m.Case(DAP_SWO_Baudrate):
+                        self.RESP_SWO_Baudrate(m)
+
+                    with m.Case(DAP_SWO_Control):
+                        self.RESP_SWO_Control(m)
+
+                    with m.Case(DAP_SWO_Status):
+                        self.RESP_SWO_Status(m)
+
+                    with m.Case(DAP_SWO_ExtendedStatus):
+                        self.RESP_SWO_ExtendedStatus(m)
+
+                    with m.Case(DAP_SWO_Data):
+                        self.RESP_SWO_Data_Setup(m)
 
                     # JTAG Commands
                     # =============
@@ -1340,7 +1651,7 @@ class CMSIS_DAP(Elaboratable):
               self.RESP_SWJ_Pins_Process(m)
 
             with m.State('DAP_SWO_Data_PROCESS'):
-              self.RESP_Not_Implemented(m)
+              self.RESP_SWO_Data_Process(m)
 
             with m.State('DAP_SWJ_Sequence_PROCESS'):
                 self.RESP_SWJ_Sequence_Process(m)

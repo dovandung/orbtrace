@@ -57,6 +57,14 @@ class TraceCore(wiring.Component):
 
     swo: wiring.In(2)
 
+    # CMSIS-DAP SWO: when dap_swo_format is non-zero (0x10 Manchester, 0x12 UART), the
+    # raw SWO bytes go to dap_swo instead of the Orbuculum trace stream, and the
+    # CMSIS-DAP side owns the input format and baud rate.
+    dap_swo_format: wiring.In(8)
+    dap_swo_baudrate: wiring.In(32)
+    dap_swo_baudrate_strobe: wiring.In(1)
+    dap_swo: wiring.Out(stream.Signature(8))
+
     led_overrun: wiring.Out(1)
     led_data: wiring.Out(1)
     led_clk: wiring.Out(1)
@@ -87,9 +95,17 @@ class TraceCore(wiring.Component):
 
         m.submodules.baudrate_divider = baudrate_divider = util.Divider(8_000_000_000, 32, 16)
 
+        dap_active = Signal()
+        input_format = Signal(8)
+
         m.d.comb += [
-            baudrate_divider.den.eq(self.async_baudrate),
-            baudrate_divider.start.eq(self.async_baudrate_strobe),
+            dap_active.eq(self.dap_swo_format != 0),
+            input_format.eq(Mux(dap_active, self.dap_swo_format, self.input_format)),
+        ]
+
+        m.d.comb += [
+            baudrate_divider.den.eq(Mux(dap_active, self.dap_swo_baudrate, self.async_baudrate)),
+            baudrate_divider.start.eq(Mux(dap_active, self.dap_swo_baudrate_strobe, self.async_baudrate_strobe)),
             nrz_decoder.bitlen.eq(baudrate_divider.res),
         ]
 
@@ -98,7 +114,7 @@ class TraceCore(wiring.Component):
         wiring.connect(m, manchester_decoder.output, bits_to_bytes.input)
         wiring.connect(m, nrz_decoder.output, uart_decoder.input)
 
-        with m.Switch(self.input_format):
+        with m.Switch(input_format):
             with m.Case(0x10, 0x11):
                 wiring.connect(m, swo2x_fifo.output, manchester_decoder.input)
                 wiring.connect(m, bits_to_bytes.output, swo_fifo.input)
@@ -111,18 +127,21 @@ class TraceCore(wiring.Component):
         m.d.comb += traceif.trace_b.eq(self.trace_b)
         wiring.connect(m, traceif.output, trace_fifo.input)
 
-        with m.Switch(self.input_format):
+        with m.Switch(input_format):
             with m.Case(0x01, 0x02, 0x03):
                 wiring.connect(m, trace_fifo.output, tpiu_demux.input)
-                m.d.comb += traceif.width.eq(self.input_format)
+                m.d.comb += traceif.width.eq(input_format)
 
             with m.Case(0x11, 0x13):
                 wiring.connect(m, swo_fifo.output, tpiu_sync.input)
                 wiring.connect(m, tpiu_sync.output, tpiu_demux.input)
 
             with m.Case(0x10, 0x12):
-                wiring.connect(m, swo_fifo.output, tpiu_demux.input_bypass)
-                m.d.comb += tpiu_demux.bypass.eq(1)
+                with m.If(dap_active):
+                    wiring.connect(m, swo_fifo.output, wiring.flipped(self.dap_swo))
+                with m.Else():
+                    wiring.connect(m, swo_fifo.output, tpiu_demux.input_bypass)
+                    m.d.comb += tpiu_demux.bypass.eq(1)
 
         wiring.connect(m, tpiu_demux.output, checksum_appender.input)
         wiring.connect(m, checksum_appender.output, cobs_encoder.input)
@@ -147,7 +166,7 @@ class TraceCore(wiring.Component):
         m.submodules.swo_overrun_indicator = swo_overrun_indicator = util.Indicator(swo_monitor.lost, 7_500_000)
         m.submodules.swo_data_indicator = swo_data_indicator = util.Indicator(swo_monitor.total, 7_500_000)
 
-        with m.Switch(self.input_format):
+        with m.Switch(input_format):
             with m.Case(0x01, 0x02, 0x03):
                 m.d.comb += [
                     self.led_overrun.eq(trace_overrun_indicator.output),

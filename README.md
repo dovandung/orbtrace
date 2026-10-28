@@ -81,6 +81,18 @@ All probe I/O is 3.3 V with no level shifters and no target power switching. Con
 
 LEDs: LED0 status, LED1 debug connected, LED2 debug running, LED3 trace clock/overrun, LED4 trace data.
 
+CMSIS-DAP SWO
+-------------
+
+The CMSIS-DAP interface supports the standard SWO commands (`DAP_SWO_Transport`, `Mode`, `Baudrate`, `Control`, `Status`, `ExtendedStatus`, `Data`), so debuggers such as IAR, Keil or pyOCD can capture SWO through the probe themselves:
+
+- Modes: UART/NRZ (125 kbit/s to 62 Mbit/s) and Manchester (up to 48 Mbit/s).
+- Transport 1: `DAP_SWO_Data` polling (v1 and v2).
+- Transport 2: streaming on a third bulk IN endpoint of the CMSIS-DAP v2 interface (v2 only).
+- 4 KiB SWO buffer in the probe (`DAP_Info` 0xFD), with overrun reported in the trace status.
+
+While a debugger has SWO switched on (mode UART or Manchester), the SWO pin belongs to CMSIS-DAP: Orbuculum receives no SWO or parallel trace until the debugger sets the SWO mode back to off. Use one or the other at a time.
+
 If the build warns that there is no vX.Y tag, your clone has no release tags and the USB device version is reported as 0.00. Fetch them with `git fetch --tags https://github.com/orbcode/orbtrace`.
 
 Thanks and stuff
