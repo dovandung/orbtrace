@@ -77,13 +77,6 @@ class Divider(wiring.Component):
 
         acc = Signal(range(self.num + 1))
 
-        with m.If(self.start):
-            m.d.sync += [
-                acc.eq(self.num),
-                self.res.eq(0),
-                self.done.eq(0),
-            ]
-
         with m.If(~self.done):
             with m.If((acc >= self.den) & (self.res != (2**self.res_bits - 1))):
                 m.d.sync += [
@@ -92,5 +85,13 @@ class Divider(wiring.Component):
                 ]
             with m.Else():
                 m.d.sync += self.done.eq(1)
+
+        # A new start always wins, even while a division is still running.
+        with m.If(self.start):
+            m.d.sync += [
+                acc.eq(self.num),
+                self.res.eq(0),
+                self.done.eq(0),
+            ]
 
         return m

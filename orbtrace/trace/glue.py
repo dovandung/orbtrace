@@ -52,6 +52,7 @@ class TraceCore(Module):
 
         core_am = core.TraceCore()
         wrapper.m.submodules += core_am
+        self.core_am = core_am # CMSIS-DAP SWO connects to this
 
         wrapper.connect_domain('trace')
         wrapper.connect_domain('swo2x')

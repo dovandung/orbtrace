@@ -12,9 +12,13 @@ from litex.soc.interconnect.stream import Endpoint
 from litex.build.io import SDRInput, DDRInput, SDROutput, SDRTristate
 
 class CMSIS_DAP(Module):
-    def __init__(self, dbgif, wrapper):
+    def __init__(self, dbgif, wrapper, trace_core = None):
         self.source = Endpoint([('data', 8)])
         self.sink = Endpoint([('data', 8)])
+
+        # SWO streaming (CMSIS-DAP SWO transport 2), only used when trace_core is given
+        self.swo_source = Endpoint([('data', 8)])
+        self.has_swo = trace_core is not None
         self.is_v2 = Signal()
         self.can = Signal()
         self.connected = Signal()
@@ -28,8 +32,25 @@ class CMSIS_DAP(Module):
         dbgif_wrapper = dbgIF_wrapper.DBGIF(dbgif, wrapper)
         wrapper.m.submodules += dbgif_wrapper
 
-        dap = cmsis_dap.CMSIS_DAP(stream_in, stream_out, dbgif_wrapper, is_v2)
+        dap = cmsis_dap.CMSIS_DAP(stream_in, stream_out, dbgif_wrapper, is_v2, has_swo = self.has_swo)
         wrapper.m.submodules += dap
+
+        if self.has_swo:
+            # Both live in the Amaranth wrapper, so connect them directly.
+            wrapper.m.d.comb += [
+                dap.swo_in_data.eq(trace_core.dap_swo.payload),
+                dap.swo_in_valid.eq(trace_core.dap_swo.valid),
+                trace_core.dap_swo.ready.eq(1),
+                trace_core.dap_swo_format.eq(dap.swo_format),
+                trace_core.dap_swo_baudrate.eq(dap.swo_baudrate),
+                trace_core.dap_swo_baudrate_strobe.eq(dap.swo_baudrate_strobe),
+            ]
+
+            wrapper.connect(self.swo_source.data, dap.swoStream.payload)
+            wrapper.connect(self.swo_source.first, dap.swoStream.first)
+            wrapper.connect(self.swo_source.last, dap.swoStream.last)
+            wrapper.connect(self.swo_source.valid, dap.swoStream.valid)
+            wrapper.connect(self.swo_source.ready, dap.swoStream.ready)
 
         wrapper.connect(self.source.data, stream_in.payload)
         wrapper.connect(self.source.first, stream_in.first)

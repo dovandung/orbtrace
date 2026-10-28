@@ -248,7 +248,10 @@ class OrbSoC(SoCCore):
 
     def add_cmsis_dap(self, with_v1 = True, with_v2 = True):
         # CMSIS-DAP.
-        self.submodules.cmsis_dap = CMSIS_DAP(self.dbgif, wrapper = self.wrapper)
+        # CMSIS-DAP SWO needs the trace core's SWO receiver
+        trace_core = self.trace.core_am if hasattr(self, 'trace') else None
+        self.submodules.cmsis_dap = CMSIS_DAP(self.dbgif, wrapper = self.wrapper, trace_core = trace_core)
+        swo_streaming = False
 
         # LEDs
         if hasattr(self, 'led_debug'):
@@ -311,6 +314,9 @@ class OrbSoC(SoCCore):
             if_num = self.usb_alloc.interface(guid='cdb3b5ad-293b-4663-aa36-1aae46463776')
             in_ep_num = self.usb_alloc.in_ep()
             out_ep_num = self.usb_alloc.out_ep()
+            swo_streaming = self.cmsis_dap.has_swo
+            if swo_streaming:
+                swo_ep_num = self.usb_alloc.in_ep()
 
             # USB descriptors.
             with self.usb_conf_desc.InterfaceDescriptor() as i:
@@ -330,6 +336,12 @@ class OrbSoC(SoCCore):
                     e.bEndpointAddress = 0x80 | in_ep_num
                     e.wMaxPacketSize   = 512
 
+                # Optional third endpoint: SWO streaming (CMSIS-DAP SWO transport 2).
+                if swo_streaming:
+                    with i.EndpointDescriptor() as e:
+                        e.bEndpointAddress = 0x80 | swo_ep_num
+                        e.wMaxPacketSize   = 512
+
             # Endpoint handlers.
             in_ep_v2 = USBStreamInEndpoint(
                 endpoint_number = in_ep_num,
@@ -342,6 +354,21 @@ class OrbSoC(SoCCore):
                 max_packet_size = 512,
             )
             self.usb.add_endpoint(out_ep_v2)
+
+            if swo_streaming:
+                swo_ep = USBStreamInEndpoint(
+                    endpoint_number = swo_ep_num,
+                    max_packet_size = 512,
+                )
+                self.usb.add_endpoint(swo_ep)
+
+                swo_cdc = ClockDomainCrossing(swo_ep.sink.description, 'sys', 'usb', depth = 8)
+                self.submodules += swo_cdc
+                self.submodules += Pipeline(self.cmsis_dap.swo_source, swo_cdc, swo_ep)
+
+        if self.cmsis_dap.has_swo and not swo_streaming:
+            # No SWO endpoint without the v2 interface; streaming is not advertised then.
+            self.comb += self.cmsis_dap.swo_source.ready.eq(1)
 
         # Stream CDC.
         stream_desc = [('data', 8)]

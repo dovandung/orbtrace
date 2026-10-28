@@ -197,6 +197,9 @@ class Platform(LatticePlatform):
     def get_profile(cls, profile):
         return {
             'default': {
+                # 72 MHz instead of the usual 75 MHz: the CPU clock domain only just met
+                # 75 MHz on the 25F (and missed it on the 12F). Nothing on Cynthion needs more.
+                'sys_clk_freq': 72e6,
                 'uart_name': 'stream',
                 'with_debug': True,
                 'with_trace': True,
