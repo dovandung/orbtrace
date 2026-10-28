@@ -18,7 +18,7 @@ def main():
     parser_orbtrace = parser.add_argument_group('Orbtrace options')
     parser_platform = parser.add_argument_group('Platform options')
 
-    parser_platform.add_argument("--platform", choices = ['ecpix5', 'orbtrace_mini'], required = True, help = 'Select platform')
+    parser_platform.add_argument("--platform", choices = ['ecpix5', 'orbtrace_mini', 'cynthion'], required = True, help = 'Select platform')
     parser_platform.add_argument("--profile", default = 'default', help = 'Select profile (argument defaults)')
 
     args, _ = parser.parse_known_args()
@@ -28,6 +28,9 @@ def main():
     
     elif args.platform == 'orbtrace_mini':
         from orbtrace.platforms.orbtrace_mini import Platform
+
+    elif args.platform == 'cynthion':
+        from orbtrace.platforms.cynthion import Platform
 
     Platform.add_arguments(parser_platform)
 
@@ -64,8 +67,13 @@ def main():
 
     args = parser.parse_args()
 
+    platform_kwargs = {}
+    if hasattr(args, 'speed'):
+        platform_kwargs['speed'] = args.speed
+
     platform = Platform(
         device = args.device,
+        **platform_kwargs,
         #toolchain = 'trellis',
     )
 

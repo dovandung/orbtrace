@@ -10,7 +10,10 @@ def get_version_bcd():
     m = re.match(r'v(\d{1,2})\.(\d)(?:\.(\d+))?-', get_version())
 
     if not m:
-        raise ValueError('Version doesn\'t match pattern representable as BCD')
+        # Happens in clones/forks without the upstream release tags.
+        # Fetch them with: git fetch --tags https://github.com/orbcode/orbtrace
+        print(f'WARNING: git version {get_version()!r} has no vX.Y tag, using bcdDevice 0.00')
+        return 0.0
 
     major, minor, patch = m.groups()
 

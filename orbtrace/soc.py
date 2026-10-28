@@ -720,7 +720,8 @@ class OrbSoC(SoCCore):
 
         self.wrapper.connect_domain('usb')
 
-        self.submodules.usb = USBDevice(self.platform.request('ulpi'), wrapper = self.wrapper)
+        self.submodules.usb = USBDevice(self.platform.request('ulpi'), wrapper = self.wrapper,
+            ulpi_extra_registers = getattr(self.platform, 'ulpi_extra_registers', None))
 
         self.usb_descriptors = DeviceDescriptorCollection()
 

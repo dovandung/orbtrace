@@ -9,7 +9,7 @@ from luna.gateware.architecture.car import PHYResetController
 from litex.soc.interconnect.stream import Endpoint
 
 class USBDevice(migen.Module):
-    def __init__(self, pads, wrapper, *args, **kwargs):
+    def __init__(self, pads, wrapper, *args, ulpi_extra_registers = None, **kwargs):
         self.wrapper = wrapper
 
         phy_reset_controller = PHYResetController()
@@ -61,6 +61,11 @@ class USBDevice(migen.Module):
 
         self.usb = luna.usb2.USBDevice(bus = ulpi, *args, **kwargs)
         wrapper.m.submodules += self.usb
+
+        # Platform specific PHY registers (e.g. D+/D- swap on Cynthion).
+        # The Amaranth fragment is elaborated without a platform, so LUNA can't pick these up by itself.
+        for address, value in (ulpi_extra_registers or {}).items():
+            self.usb.utmi.add_extra_register(address, value)
 
         wrapper.m.d.comb += [
             self.usb.connect.eq(1),

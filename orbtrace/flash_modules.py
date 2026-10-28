@@ -48,3 +48,25 @@ class S25FL064L(SpiNorFlashModule):
         SpiNorFlashOpCodes.READ_1_4_4,
     ]
     dummy_bits = 40
+
+class W25Q32JV(SpiNorFlashModule):
+    # Used on Cynthion (W25Q32JVSSIQ, QE=1 from factory).
+    manufacturer_id = SpiNorFlashManufacturerIDs.WINBOND
+    device_id = 0x4016
+    name = "w25q32jv"
+
+    total_size  =    4194304   # bytes
+    page_size   =        256   # bytes
+    total_pages =      16384
+
+    supported_opcodes = [
+        SpiNorFlashOpCodes.READ_1_1_1,
+        SpiNorFlashOpCodes.PP_1_1_1,
+        SpiNorFlashOpCodes.READ_1_1_1_FAST,
+        SpiNorFlashOpCodes.READ_1_1_2,
+        SpiNorFlashOpCodes.READ_1_1_4,
+        SpiNorFlashOpCodes.PP_1_1_4,
+        SpiNorFlashOpCodes.READ_1_4_4,
+    ]
+    # Fast Read Quad I/O (EBh): 2 mode cycles + 4 dummy cycles on 4 lines.
+    dummy_bits = 24

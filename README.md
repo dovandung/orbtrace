@@ -49,6 +49,40 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="3442", GROUP="plu
 
 ...you can then activate the new rules with `sudo udevadm control --reload-rules && sudo udevadm trigger`.
 
+Cynthion (Great Scott Gadgets)
+------------------------------
+
+The gateware can also run on a Cynthion, with the probe signals on the two Pmod headers.
+
+`pdm run orbtrace_builder --platform cynthion --build`
+
+Options: `--device 25F` (default) or `--device 12F` to match the ECP5 on your board (read the chip marking), and `--speed 6|7|8` (default 8).
+
+Load it into the FPGA with Apollo (temporary), or write it to flash (permanent):
+
+`apollo configure build/cynthion/gateware/cynthion.bit`
+
+`apollo flash-program build/cynthion/gateware/cynthion.bit`
+
+Connect the **CONTROL** port for power and Apollo, and use the **AUX** port as the ORBTrace USB connection (VID:PID 1209:3443, same udev rules as below).
+
+All probe I/O is 3.3 V with no level shifters and no target power switching. Connect 3.3 V targets directly, or add an external level shifter. Pmod pin numbers are as printed on the board (pins 5/11 are GND, 6/12 are 3.3 V):
+
+| Pmod A pin | Signal      | Pmod B pin | Signal                     |
+|------------|-------------|------------|----------------------------|
+| 1          | TRACEDATA3  | 1          | SWDIO / TMS                |
+| 2          | (spare)     | 2          | SWCLK / TCK                |
+| 3          | (spare)     | 3          | SWO / TDO                  |
+| 4          | (spare)     | 4          | TDI                        |
+| 7          | TRACECLK    | 7          | nRESET                     |
+| 8          | TRACEDATA0  | 8          | SWDIO direction (output)   |
+| 9          | TRACEDATA1  | 9          | GPIO0                      |
+| 10         | TRACEDATA2  | 10         | (spare)                    |
+
+LEDs: LED0 status, LED1 debug connected, LED2 debug running, LED3 trace clock/overrun, LED4 trace data.
+
+If the build warns that there is no vX.Y tag, your clone has no release tags and the USB device version is reported as 0.00. Fetch them with `git fetch --tags https://github.com/orbcode/orbtrace`.
+
 Thanks and stuff
 ----------------
 
